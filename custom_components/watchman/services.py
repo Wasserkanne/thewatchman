@@ -122,8 +122,10 @@ class WatchmanServicesSetup:
         report_data = {
             "missing_entities": self.coordinator._missing_entities_cache,
             "missing_services": self.coordinator._missing_actions_cache,
+            "missing_references": self.coordinator._missing_references_cache,
             "parsed_entity_list": self.coordinator._parsed_entity_list_cache,
             "parsed_service_list": self.coordinator._parsed_service_list_cache,
+            "parsed_reference_list": self.coordinator._parsed_reference_list_cache,
             "files_parsed": self.coordinator.data.get(COORD_DATA_PROCESSED_FILES, 0),
             "files_ignored": self.coordinator.data.get(COORD_DATA_IGNORED_FILES, 0),
             "parse_duration": self.coordinator.data.get(COORD_DATA_PARSE_DURATION, 0.0),

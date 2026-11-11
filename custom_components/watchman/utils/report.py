@@ -19,6 +19,7 @@ from ..const import (
     CONF_HEADER,
     DEFAULT_HEADER,
     REPORT_ENTRY_TYPE_ENTITY,
+    REPORT_ENTRY_TYPE_REFERENCE,
     REPORT_ENTRY_TYPE_SERVICE,
 )
 from .logger import _LOGGER
@@ -47,6 +48,40 @@ async def parsing_stats(hass: HomeAssistant, parse_duration: float, last_check_d
     )
 
 
+def render_entity_section(
+    hass: HomeAssistant,
+    missing_entities: dict[str, Any],
+    entity_list: dict[str, Any],
+    render: Callable[[HomeAssistant, str, dict[str, Any], dict[str, Any]], str] | None,
+) -> str:
+    """Build the entity section of the report."""
+    if missing_entities:
+        section = f"\n-== Missing {len(missing_entities)} entity(ies) from "
+        section += f"{len(entity_list)} found in your config:\n"
+        if render:
+            section += render(hass, REPORT_ENTRY_TYPE_ENTITY, missing_entities, entity_list)
+        return section + "\n"
+
+    if entity_list:
+        return f"\n-== Congratulations, all {len(entity_list)} entities from your config are available!\n"
+
+    return "\n-== No entities found in configuration files!\n"
+
+
+def render_reference_section(
+    hass: HomeAssistant,
+    missing_references: dict[str, Any],
+    reference_list: dict[str, Any],
+    render: Callable[[HomeAssistant, str, dict[str, Any], dict[str, Any]], str] | None,
+) -> str:
+    """Build the report section for missing device/area/floor/label references."""
+    section = f"\n-== Missing {len(missing_references)} device/area/floor/label reference(s) from "
+    section += f"{len(reference_list)} found in your config:\n"
+    if render:
+        section += render(hass, REPORT_ENTRY_TYPE_REFERENCE, missing_references, reference_list)
+    return section + "\n"
+
+
 async def report(
     hass: HomeAssistant,
     missing_entities: dict[str, Any],
@@ -58,14 +93,17 @@ async def report(
     parse_duration: float,
     last_check_duration: float,
     *,
+    missing_references: dict[str, Any] | None = None,
+    parsed_reference_list: dict[str, Any] | None = None,
     render: Callable[[HomeAssistant, str, dict[str, Any], dict[str, Any]], str]
     | None = None,
     chunk_size: int | None = None,
 ) -> list[str]:
-    """Generate a report of missing entities and services."""
+    """Generate a report of missing entities, services and registry references."""
     start_time = time.time()
     service_list = parsed_service_list
     entity_list = parsed_entity_list
+    reference_list = parsed_reference_list or {}
 
     header = get_config(hass, CONF_HEADER, DEFAULT_HEADER)
 
@@ -82,18 +120,10 @@ async def report(
     else:
         rep += "\n-== No actions found in configuration files!\n"
 
-    if missing_entities:
-        rep += f"\n-== Missing {len(missing_entities)} entity(ies) from "
-        rep += f"{len(entity_list)} found in your config:\n"
-        if render:
-            rep += render(hass, REPORT_ENTRY_TYPE_ENTITY, missing_entities, entity_list)
-        rep += "\n"
+    rep += render_entity_section(hass, missing_entities, entity_list, render)
 
-    elif len(entity_list) > 0:
-        rep += f"\n-== Congratulations, all {len(entity_list)} entities from "
-        rep += "your config are available!\n"
-    else:
-        rep += "\n-== No entities found in configuration files!\n"
+    if missing_references:
+        rep += render_reference_section(hass, missing_references, reference_list, render)
 
     (
         report_datetime,
@@ -159,6 +189,20 @@ def table_renderer(
         table.align = "l"
         return table.get_string()
 
+    if entry_type == REPORT_ENTRY_TYPE_REFERENCE:
+        table.field_names = ["Reference", "Type", "Location"]
+        for reference in missing_items:
+            ref_type = parsed_list[reference].get("type", "")
+            table.add_row(
+                [
+                    format_column_text(reference, columns_width[0]),
+                    format_column_text(ref_type, columns_width[1]),
+                    format_occurrences(parsed_list[reference]["occurrences"], columns_width[2]),
+                ]
+            )
+        table.align = "l"
+        return table.get_string()
+
     return f"Table render error: unknown entry type: {entry_type}"
 
 
@@ -183,6 +227,12 @@ def text_renderer(
             loc = format_occurrences(parsed_list[entity]["occurrences"], 0)
             result += f"{entity_col} [{format_state(state)}] in: {loc}\n"
 
+        return result
+    if entry_type == REPORT_ENTRY_TYPE_REFERENCE:
+        for reference in missing_items:
+            ref_type = parsed_list[reference].get("type", "")
+            loc = format_occurrences(parsed_list[reference]["occurrences"], 0)
+            result += f"{reference} ({ref_type}) in: {loc}\n"
         return result
     return f"Text render error: unknown entry type: {entry_type}"
 

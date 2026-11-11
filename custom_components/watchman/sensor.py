@@ -23,8 +23,10 @@ from .const import (
     COORD_DATA_LAST_UPDATE,
     COORD_DATA_MISSING_ACTIONS,
     COORD_DATA_MISSING_ENTITIES,
+    COORD_DATA_MISSING_REFERENCES,
     COORD_DATA_PARSE_DURATION,
     COORD_DATA_PROCESSED_FILES,
+    COORD_DATA_REFERENCE_ATTRS,
     COORD_DATA_SERVICE_ATTRS,
     DOMAIN,
     SENSOR_IGNORED_FILES,
@@ -32,6 +34,7 @@ from .const import (
     SENSOR_LAST_UPDATE,
     SENSOR_MISSING_ACTIONS,
     SENSOR_MISSING_ENTITIES,
+    SENSOR_MISSING_REFERENCES,
     SENSOR_PARSE_DURATION,
     SENSOR_PROCESSED_FILES,
     SENSOR_STATUS,
@@ -68,6 +71,14 @@ SENSORS_CONFIGURATION = [
         state_class=SensorStateClass.MEASUREMENT,
         entity_category=EntityCategory.DIAGNOSTIC,
         icon="mdi:shield-half-full",
+        native_unit_of_measurement="items",
+    ),
+    SensorEntityDescription(
+        key=SENSOR_MISSING_REFERENCES,
+        translation_key="missing_references",
+        state_class=SensorStateClass.MEASUREMENT,
+        entity_category=EntityCategory.DIAGNOSTIC,
+        icon="mdi:target",
         native_unit_of_measurement="items",
     ),
     SensorEntityDescription(
@@ -109,6 +120,26 @@ SENSORS_CONFIGURATION = [
     ),
 ]
 
+
+def _create_sensor(
+    coordinator: Any, description: SensorEntityDescription
+) -> SensorEntity | None:
+    """Instantiate the sensor class belonging to a description."""
+    sensor_classes = {
+        SENSOR_LAST_UPDATE: LastUpdateSensor,
+        SENSOR_MISSING_ENTITIES: MissingEntitiesSensor,
+        SENSOR_MISSING_ACTIONS: MissingActionsSensor,
+        SENSOR_MISSING_REFERENCES: MissingReferencesSensor,
+        SENSOR_STATUS: StatusSensor,
+        SENSOR_PARSE_DURATION: ParseDurationSensor,
+        SENSOR_LAST_PARSE: LastParseSensor,
+        SENSOR_PROCESSED_FILES: ProcessedFilesSensor,
+        SENSOR_IGNORED_FILES: IgnoredFilesSensor,
+    }
+    sensor_class = sensor_classes.get(description.key)
+    return sensor_class(coordinator, description) if sensor_class else None
+
+
 async def async_setup_entry(
     hass: HomeAssistant, entry: ConfigEntry, async_add_devices: AddEntitiesCallback
 ) -> None:
@@ -134,22 +165,9 @@ async def async_setup_entry(
         await update_or_cleanup_entity(ent_reg, "sensor", DOMAIN, dub_uid, new_uid)
 
         # Instantiate sensor classes
-        if description.key == SENSOR_LAST_UPDATE:
-            entities.append(LastUpdateSensor(coordinator, description))
-        elif description.key == SENSOR_MISSING_ENTITIES:
-            entities.append(MissingEntitiesSensor(coordinator, description))
-        elif description.key == SENSOR_MISSING_ACTIONS:
-            entities.append(MissingActionsSensor(coordinator, description))
-        elif description.key == SENSOR_STATUS:
-            entities.append(StatusSensor(coordinator, description))
-        elif description.key == SENSOR_PARSE_DURATION:
-            entities.append(ParseDurationSensor(coordinator, description))
-        elif description.key == SENSOR_LAST_PARSE:
-            entities.append(LastParseSensor(coordinator, description))
-        elif description.key == SENSOR_PROCESSED_FILES:
-            entities.append(ProcessedFilesSensor(coordinator, description))
-        elif description.key == SENSOR_IGNORED_FILES:
-            entities.append(IgnoredFilesSensor(coordinator, description))
+        sensor = _create_sensor(coordinator, description)
+        if sensor:
+            entities.append(sensor)
 
     async_add_devices(entities)
 
@@ -254,6 +272,44 @@ class MissingActionsSensor(WatchmanEntity, SensorEntity):
                 "services": self.coordinator.data.get(COORD_DATA_SERVICE_ATTRS, [])
             }
         self.async_write_ha_state()
+        super()._handle_coordinator_update()
+
+
+class MissingReferencesSensor(WatchmanEntity, SensorEntity):
+    """Number of missing device/area/floor/label references from watchman report."""
+
+    _attr_should_poll = False
+    _attr_has_entity_name = True
+    _unrecorded_attributes = frozenset({MATCH_ALL})
+
+    @property
+    def should_poll(self) -> bool:
+        """No polling needed."""
+        return False
+
+    @property
+    def native_value(self) -> Any:
+        """Return the native value of the sensor."""
+        if self.coordinator.data:
+            return self.coordinator.data.get(COORD_DATA_MISSING_REFERENCES)
+        return None
+
+    @property
+    def extra_state_attributes(self) -> dict[str, Any]:
+        """Return the state attributes."""
+        if self.coordinator.data:
+            return {"references": self.coordinator.data.get(COORD_DATA_REFERENCE_ATTRS, [])}
+        return {}
+
+    @callback
+    def _handle_coordinator_update(self) -> None:
+        """Handle updated data from the coordinator."""
+        if self.coordinator.data:
+            self._attr_native_value = self.coordinator.data.get(COORD_DATA_MISSING_REFERENCES)
+            self._attr_extra_state_attributes = {
+                "references": self.coordinator.data.get(COORD_DATA_REFERENCE_ATTRS, [])
+            }
+            self.async_write_ha_state()
         super()._handle_coordinator_update()
 
 

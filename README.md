@@ -22,7 +22,7 @@ Home Assistant setups evolve over time—entities can disappear, and services/ac
 Refer to the [Configuration Options](#configuration-options) for further fine-tuning.
 
 ## What does it do
-Watchman is a custom integration for Home Assistant that scans your YAML configuration files and collects referenced entities (sensors, timers, input_select, etc.) and services/actions. It then checks each entity’s current state and reports those that are missing or unavailable. For services/actions, it verifies that they exist in Home Assistant’s registry. The result can be saved as a nicely formatted text table or sent via your preferred notification method (unless the notification target itself is missing 😄). See an [example of a report](https://github.com/dummylabs/thewatchman#example-of-a-watchman-report) below.
+Watchman is a custom integration for Home Assistant that scans your YAML configuration files and collects referenced entities (sensors, timers, input_select, etc.) and services/actions. It then checks each entity’s current state and reports those that are missing or unavailable. For services/actions, it verifies that they exist in Home Assistant’s registry. It also collects `device_id`, `area_id`, `floor_id` and `label_id` references — the targets the UI automation editor creates — and verifies them against the device, area, floor and label registries. The result can be saved as a nicely formatted text table or sent via your preferred notification method (unless the notification target itself is missing 😄). See an [example of a report](https://github.com/dummylabs/thewatchman#example-of-a-watchman-report) below.
 
 Watchman intentionally keeps the parsing logic lightweight. It doesn’t build a full model of your configuration or try to understand dependencies between files, automations, and templates. Instead, it reads YAML files line by line and uses regex-based heuristics to detect entity and service/action references. Because of this, it may produce false positives (something looks like as an entity, but isn’t) and false negatives (a real reference isn’t detected). You can silence false positives using *Ignored entities and actions* option (see the Configuration section). Reducing false negatives is an ongoing improvement area.
 
@@ -106,6 +106,7 @@ Sensor                             | Meaning
 `sensor.watchman_last_parse`       | Date and time of last parse. Usually it only occurs during HA restart or when HA configuration is reloaded.
 `sensor.watchman_missing_entities` | Number of flagged entities in the report.
 `sensor.watchman_missing_actions`  | Number of flagged actions in the report.
+`sensor.watchman_missing_references` | Number of flagged device/area/floor/label references in the report. The `references` attribute lists each missing id with its registry type and location.
 `sensor.watchman_last_updated`     | Date and time of the last update for the sensors above. Watchman sensors update whenever a configured entity changes status (e.g., becomes unavailable, goes missing, or returns to a functional state).
 `sensor.watchman_parse_duration`   | Time taken for the last parse attempt. This value helps monitor system performance to ensure that Watchman operates efficiently without over-consuming system resources.
 `sensor.watchman_processed_files`  | The number of configuration files processed by Wathcman. 

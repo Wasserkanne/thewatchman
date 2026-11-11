@@ -8,8 +8,29 @@ from homeassistant.core import HomeAssistant
 
 from .const import BUNDLED_IGNORED_ITEMS, CONF_ENFORCE_FILE_SIZE, CONF_IGNORED_ITEMS
 from .utils.logger import _LOGGER
+from .utils.parser_const import REFERENCE_ITEM_TYPES
 from .utils.parser_core import ParseResult, WatchmanParser, get_domains
 from .utils.utils import get_config
+
+
+def _bucket_for_item_type(
+    item_type: str, entities: dict, services: dict, references: dict
+) -> dict:
+    """Return the report bucket an item type belongs to."""
+    if item_type == "entity":
+        return entities
+    if item_type in REFERENCE_ITEM_TYPES:
+        return references
+    return services
+
+
+def _new_item_entry(item_type: str) -> dict:
+    """Create the accumulator for one parsed item."""
+    entry = {"locations": {}, "automations": set(), "occurrences": []}
+    if item_type in REFERENCE_ITEM_TYPES:
+        # keep the registry kind for validation and reporting
+        entry["type"] = item_type
+    return entry
 
 
 class WatchmanHub:
@@ -51,6 +72,7 @@ class WatchmanHub:
 
         entities = {}
         services = {}
+        references = {}
 
         try:
             raw_items = self._parser.get_found_items(item_type='all')
@@ -75,10 +97,10 @@ class WatchmanHub:
             if is_ignored:
                 continue
 
-            target_dict = entities if item_type == 'entity' else services
+            target_dict = _bucket_for_item_type(item_type, entities, services, references)
 
             if entity_id not in target_dict:
-                target_dict[entity_id] = {"locations": {}, "automations": set(), "occurrences": []}
+                target_dict[entity_id] = _new_item_entry(item_type)
 
             if path not in target_dict[entity_id]["locations"]:
                 target_dict[entity_id]["locations"][path] = []
@@ -109,7 +131,7 @@ class WatchmanHub:
         self._monitored_entities = set(entities.keys())
         self._monitored_services = set(services.keys())
 
-        return {"entities": entities, "services": services}
+        return {"entities": entities, "services": services, "references": references}
 
     async def async_parse(
         self, ignored_files: list[str], ignore_mtime: bool = False
