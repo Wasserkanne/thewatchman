@@ -117,6 +117,9 @@
             "missing_actions": {
                 "name": "Chýbajúce akcie"
             },
+            "missing_references": {
+                "name": "Chýbajúce referencie"
+            },
             "status": {
                 "name": "Stav",
                 "state": {

@@ -36,6 +36,8 @@ from .parser_const import (
     REGEX_OPTIONAL_STATES,
     REGEX_STRICT_SERVICE,
     STORAGE_WHITELIST_PATTERNS,
+    TARGET_ID_KEYS,
+    TEMPLATE_ATTRIBUTE_NAMES,
     YAML_FILE_EXTS,
 )
 from .yaml_loader import LineLoader
@@ -78,7 +80,13 @@ class FoundItem(TypedDict):
     parent_alias: str | None
 
 def get_domains(hass: HomeAssistant | None = None) -> list[str]:
-    """Return a list of valid domains."""
+    """Return a list of valid domains.
+
+    Built from the HA platform enum, the built-in domain list and, when a hass
+    instance is available, from registered service domains plus the domains
+    present in the entity registry. The latter covers custom integrations that
+    expose entities without registering any service.
+    """
     platforms = PLATFORMS
     try:
         from homeassistant.const import Platform #noqa: PLC0415, I001
@@ -90,6 +98,13 @@ def get_domains(hass: HomeAssistant | None = None) -> list[str]:
     if hass:
         with contextlib.suppress(Exception):
             extra_domains = list(hass.services.async_services().keys())
+
+        with contextlib.suppress(Exception):
+            from homeassistant.helpers import entity_registry as er  #noqa: PLC0415
+
+            extra_domains.extend(
+                entry.domain for entry in er.async_get(hass).entities.values()
+            )
 
     return sorted(set(platforms + HA_DOMAINS + extra_domains))
 
@@ -176,6 +191,38 @@ def is_template(value: str) -> bool:
     )
 
 
+def _is_template_attribute_access(text: str, start: int) -> bool:
+    """Return True if text[start:] begins with a known state-object property."""
+    match = re.match(r"[a-z0-9_]+", text[start:], re.IGNORECASE)
+    return bool(match and match.group(0).lower() in TEMPLATE_ATTRIBUTE_NAMES)
+
+
+def _is_complete_reference(
+    text: str, match: re.Match, extra_stop: tuple[str, ...] = ("{", "[")
+) -> bool:
+    """Return False if the match is part of a longer identifier (Heuristic 18).
+
+    `entity.state` and `entity.attributes.x` are Jinja attribute access on a
+    state object, while hostnames, filenames and other dot-separated strings
+    (`frigate.stunnel.status`) must not be reported — hence the property
+    whitelist.
+    """
+    end_idx = match.end(1)
+    if end_idx >= len(text):
+        return True
+
+    next_char = text[end_idx]
+    if next_char == "-" or next_char in extra_stop:
+        return False
+
+    if next_char == ".":
+        if "states." in match.group(0).lower():
+            return True
+        return _is_template_attribute_access(text, end_idx + 1)
+
+    return True
+
+
 def _scan_string_for_entities(
     content: str,
     results: list[FoundItem],
@@ -199,15 +246,9 @@ def _scan_string_for_entities(
         if entity_id.endswith("_"):
             continue
 
-        # Word Boundary Check (Heuristic 18)
-        end_idx = match.end(1)
-        if end_idx < len(content):
-            next_char = content[end_idx]
-            if next_char in ("-", "{", "["):
-                continue
-            if next_char == ".":
-                if "states." not in match.group(0).lower():
-                    continue
+        # Word Boundary Check (Heuristic 18) + Jinja attribute access (Heuristic 26)
+        if not _is_complete_reference(content, match):
+            continue
 
         remaining_text = content[match.end(1) :].lstrip()
         if remaining_text.startswith("("):
@@ -226,6 +267,42 @@ def _scan_string_for_entities(
                 "parent_alias": context.parent_alias,
             }
         )
+
+
+def _collect_target_reference(
+    results: list[FoundItem],
+    ref_type: str,
+    value: Any,
+    key_name: str | None,
+    context: ParserContext,
+) -> None:
+    """Record a device/area/floor/label reference.
+
+    Values are registry ids, not entity ids. Templates and custom YAML tags are
+    skipped because they cannot be resolved statically.
+    """
+    if getattr(value, "is_tag", False) or not isinstance(value, str):
+        return
+
+    ref_id = value.strip()
+    if not ref_id or is_template(ref_id) or " " in ref_id:
+        return
+
+    line_no = getattr(value, "line", None) or getattr(key_name, "line", 0) or 0
+
+    results.append(
+        {
+            "line": line_no,
+            "entity_id": ref_id,
+            "item_type": ref_type,
+            "is_key": False,
+            "key_name": key_name,
+            "is_automation_context": context.is_active,
+            "parent_type": context.parent_type,
+            "parent_id": context.parent_id,
+            "parent_alias": context.parent_alias,
+        }
+    )
 
 
 def _yield_template_lines(content: str) -> Generator[tuple[str, str, int], None, None]:
@@ -397,15 +474,9 @@ def _recursive_search(
                     if entity_id.endswith("_"):
                         continue
 
-                    # Word Boundary Check (Heuristic 18)
-                    end_idx = match.end(1)
-                    if end_idx < len(key):
-                        next_char = key[end_idx]
-                        if next_char == "-":
-                            continue
-                        if next_char == ".":
-                            if "states." not in match.group(0).lower():
-                                continue
+                    # Word Boundary Check (Heuristic 18) + Jinja attribute access (Heuristic 26)
+                    if not _is_complete_reference(key, match, extra_stop=()):
+                        continue
 
                     remaining_text = key[match.end(1) :].lstrip()
                     if remaining_text.startswith("("):
@@ -424,6 +495,22 @@ def _recursive_search(
                             "parent_alias": current_context.parent_alias,
                         }
                     )
+
+            # Registry references (device/area/floor/label targets) are not
+            # entities: collect them with their own item type so they can be
+            # validated against the matching registry later.
+            if not is_esphome and isinstance(key, str):
+                ref_type = TARGET_ID_KEYS.get(key.lower())
+                if ref_type:
+                    ref_values = value if isinstance(value, list) else [value]
+                    for ref_value in ref_values:
+                        _collect_target_reference(
+                            results,
+                            ref_type,
+                            ref_value,
+                            key,
+                            current_context,
+                        )
 
             # Determine expected type for value
             is_action_key = (

@@ -97,8 +97,9 @@ async def async_setup_entry(hass: HomeAssistant, config_entry: WMConfigEntry) ->
             all_items = await hub.async_get_all_items()
             parsed_entities = all_items["entities"]
             parsed_services = all_items["services"]
+            parsed_references = all_items.get("references", {})
             initial_data = await coordinator.async_process_parsed_data(
-                parsed_entities, parsed_services
+                parsed_entities, parsed_services, parsed_references
             )
             coordinator.async_set_updated_data(initial_data)
         except Exception as e:

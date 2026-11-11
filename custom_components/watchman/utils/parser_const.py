@@ -57,12 +57,33 @@ IGNORED_BRANCH_KEYS = {'url', 'example', 'description', 'event_type', 'logger'}
 # Keys identifying an action/service call
 ACTION_KEYS = {'service', 'action', 'service_template', 'perform_action'}
 
+# Keys referencing Home Assistant registry objects instead of entities.
+# The UI automation editor emits these for device/area/floor/label targets, so a
+# parser that only knows `entity_id` silently ignores most UI-authored automations.
+TARGET_ID_KEYS = {
+    'device_id': 'device',
+    'area_id': 'area',
+    'floor_id': 'floor',
+    'label_id': 'label',
+}
+
+# item_type values used for references validated against non-entity registries
+REFERENCE_ITEM_TYPES = frozenset(TARGET_ID_KEYS.values())
+
 # Keys where the parser ignores the immediate string value (to avoid false positives)
 # but continues recursion if the value is a complex structure.
 # 'condition' (singular) covers HA 2025.12+ Purpose-specific condition intents
 # (e.g. `condition: person.is_not_home`). 'conditions' (plural) is NOT listed here
 # because its value is always a list — recursion handles it without hitting the str branch.
 IGNORED_VALUE_KEYS = {'trigger', 'triggers', 'condition'}
+
+# Properties of a Home Assistant state object that may follow an entity id in a
+# Jinja template ({{ sensor.x.state }}). Used to tell attribute access apart from
+# hostnames, filenames and other dot-separated strings.
+TEMPLATE_ATTRIBUTE_NAMES = frozenset({
+    'state', 'attributes', 'name', 'entity_id', 'domain', 'object_id',
+    'last_changed', 'last_updated', 'last_reported', 'context',
+})
 
 # Domains to parse in core.config_entries
 CONFIG_ENTRY_DOMAINS = {'group', 'template'}

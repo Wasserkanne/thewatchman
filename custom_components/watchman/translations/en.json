@@ -117,6 +117,9 @@
             "missing_actions": {
                 "name": "Missing Actions"
             },
+            "missing_references": {
+                "name": "Missing References"
+            },
             "status": {
                 "name": "Status",
                 "state": {

@@ -17,10 +17,20 @@ from homeassistant.const import (
     EVENT_SERVICE_REMOVED,
 )
 from homeassistant.core import CALLBACK_TYPE, Event, HomeAssistant, callback
-from homeassistant.helpers import entity_registry as er
+from homeassistant.helpers import (
+    area_registry as ar,
+    device_registry as dr,
+    entity_registry as er,
+    floor_registry as fr,
+    label_registry as lr,
+)
+from homeassistant.helpers.area_registry import EVENT_AREA_REGISTRY_UPDATED
 from homeassistant.helpers.debounce import Debouncer
+from homeassistant.helpers.device_registry import EVENT_DEVICE_REGISTRY_UPDATED
 from homeassistant.helpers.entity_registry import EVENT_ENTITY_REGISTRY_UPDATED
 from homeassistant.helpers.event import async_track_state_change_event
+from homeassistant.helpers.floor_registry import EVENT_FLOOR_REGISTRY_UPDATED
+from homeassistant.helpers.label_registry import EVENT_LABEL_REGISTRY_UPDATED
 from homeassistant.helpers.storage import Store
 from homeassistant.helpers.update_coordinator import DataUpdateCoordinator
 from homeassistant.util import dt as dt_util
@@ -36,8 +46,10 @@ from .const import (
     COORD_DATA_LAST_UPDATE,
     COORD_DATA_MISSING_ACTIONS,
     COORD_DATA_MISSING_ENTITIES,
+    COORD_DATA_MISSING_REFERENCES,
     COORD_DATA_PARSE_DURATION,
     COORD_DATA_PROCESSED_FILES,
+    COORD_DATA_REFERENCE_ATTRS,
     COORD_DATA_SERVICE_ATTRS,
     DEFAULT_DELAY,
     EVENT_AUTOMATION_RELOADED,
@@ -231,6 +243,54 @@ def renew_missing_items_list(
     return missing_items
 
 
+def _reference_exists(hass: HomeAssistant, ref_type: str, ref_id: str) -> bool:
+    """Check a device/area/floor/label id against the matching registry."""
+    if ref_type == "device":
+        return dr.async_get(hass).async_get(ref_id) is not None
+    if ref_type == "area":
+        return ar.async_get(hass).async_get_area(ref_id) is not None
+    if ref_type == "floor":
+        return fr.async_get(hass).async_get_floor(ref_id) is not None
+    if ref_type == "label":
+        return lr.async_get(hass).async_get_label(ref_id) is not None
+    # unknown reference kind: do not report it
+    return True
+
+
+def check_single_reference_status(
+    hass: HomeAssistant,
+    entry: str,
+    data: dict[str, Any],
+    ctx: FilterContext,
+) -> list[dict[str, Any]] | None:
+    """Check a registry reference (device/area/floor/label) found in the config."""
+    ref_type = data.get("type", "device")
+
+    if _reference_exists(hass, ref_type, entry):
+        return None
+
+    if not _is_safe_to_report(hass, entry, data, ctx, is_entity_check=False):
+        return None
+
+    return data["occurrences"]
+
+
+def renew_missing_references_list(
+    hass: HomeAssistant,
+    parsed_list: dict[str, Any],
+    ctx: FilterContext,
+) -> dict[str, Any]:
+    """Refresh the list of missing device/area/floor/label references."""
+    missing_references = {}
+
+    for entry, data in parsed_list.items():
+        result = check_single_reference_status(hass, entry, data, ctx)
+        if result is not None:
+            missing_references[entry] = result
+
+    return missing_references
+
+
 class WatchmanCoordinator(DataUpdateCoordinator):
     """Watchman coordinator."""
 
@@ -281,16 +341,20 @@ class WatchmanCoordinator(DataUpdateCoordinator):
         self._dirty_entities: set[str] = set()
         self._missing_entities_cache: dict[str, Any] = {}
         self._missing_actions_cache: dict[str, Any] = {}
+        self._missing_references_cache: dict[str, Any] = {}
         self._parsed_entity_list_cache: dict[str, Any] = {}
         self._parsed_service_list_cache: dict[str, Any] = {}
+        self._parsed_reference_list_cache: dict[str, Any] = {}
         self._force_full_rescan: bool = True
 
         self.data = {
             COORD_DATA_MISSING_ENTITIES: 0,
             COORD_DATA_MISSING_ACTIONS: 0,
+            COORD_DATA_MISSING_REFERENCES: 0,
             COORD_DATA_LAST_UPDATE: dt_util.now(),
             COORD_DATA_SERVICE_ATTRS: "",
             COORD_DATA_ENTITY_ATTRS: "",
+            COORD_DATA_REFERENCE_ATTRS: "",
             COORD_DATA_PARSE_DURATION: 0.0,
             COORD_DATA_LAST_PARSE: None,
             COORD_DATA_PROCESSED_FILES: 0,
@@ -457,8 +521,15 @@ class WatchmanCoordinator(DataUpdateCoordinator):
         """Return a dictionary of parsed services and their locations."""
         return (await self.hub.async_get_all_items())["services"]
 
+    async def async_get_parsed_references(self) -> dict[str, Any]:
+        """Return a dictionary of parsed device/area/floor/label references."""
+        return (await self.hub.async_get_all_items()).get("references", {})
+
     async def async_process_parsed_data(
-        self, parsed_entity_list: dict[str, Any], parsed_service_list: dict[str, Any]
+        self,
+        parsed_entity_list: dict[str, Any],
+        parsed_service_list: dict[str, Any],
+        parsed_reference_list: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         """Process parsed data to calculate missing items and build sensor attributes.
 
@@ -466,6 +537,7 @@ class WatchmanCoordinator(DataUpdateCoordinator):
         """
         # Build optimized Home Assistant data context once
         ctx = self._build_filter_context()
+        parsed_reference_list = parsed_reference_list or {}
 
         services_missing = renew_missing_items_list(
             self.hass,
@@ -479,10 +551,17 @@ class WatchmanCoordinator(DataUpdateCoordinator):
             ctx,
             item_type="entity",
         )
+        references_missing = renew_missing_references_list(
+            self.hass,
+            parsed_reference_list,
+            ctx,
+        )
 
         # Initialize internal cache
         self._missing_entities_cache = entities_missing
         self._missing_actions_cache = services_missing
+        self._missing_references_cache = references_missing
+        self._parsed_reference_list_cache = parsed_reference_list
         self._force_full_rescan = False
         self._dirty_entities.clear()
 
@@ -511,12 +590,25 @@ class WatchmanCoordinator(DataUpdateCoordinator):
             for service in services_missing
         ]
 
+        reference_attrs = [
+            {
+                "id": reference,
+                "type": parsed_reference_list.get(reference, {}).get("type", ""),
+                "occurrences": format_occurrences(
+                    parsed_reference_list[reference]["occurrences"], 0
+                ),
+            }
+            for reference in references_missing
+        ]
+
         return {
             COORD_DATA_MISSING_ENTITIES: len(entities_missing),
             COORD_DATA_MISSING_ACTIONS: len(services_missing),
+            COORD_DATA_MISSING_REFERENCES: len(references_missing),
             COORD_DATA_LAST_UPDATE: dt_util.now(),
             COORD_DATA_SERVICE_ATTRS: service_attrs,
             COORD_DATA_ENTITY_ATTRS: entity_attrs,
+            COORD_DATA_REFERENCE_ATTRS: reference_attrs,
             COORD_DATA_PARSE_DURATION: self.data.get(COORD_DATA_PARSE_DURATION, 0.0),
             COORD_DATA_LAST_PARSE: self.data.get(COORD_DATA_LAST_PARSE),
             COORD_DATA_PROCESSED_FILES: self.data.get(COORD_DATA_PROCESSED_FILES, 0),
@@ -528,6 +620,7 @@ class WatchmanCoordinator(DataUpdateCoordinator):
         all_items = await self.hub.async_get_all_items()
         parsed_services = all_items["services"]
         parsed_entities = all_items["entities"]
+        parsed_references = all_items.get("references", {})
 
         ctx = self._build_filter_context()
 
@@ -542,6 +635,11 @@ class WatchmanCoordinator(DataUpdateCoordinator):
             parsed_entities,
             ctx,
             item_type="entity",
+        )
+        missing_references = renew_missing_references_list(
+            self.hass,
+            parsed_references,
+            ctx,
         )
 
         def flatten_occurrences(
@@ -569,6 +667,11 @@ class WatchmanCoordinator(DataUpdateCoordinator):
         for service_id, occurrences in missing_services.items():
             actions_list.extend(flatten_occurrences(service_id, occurrences, "missing"))
 
+        references_list = []
+        for reference_id, occurrences in missing_references.items():
+            ref_type = parsed_references.get(reference_id, {}).get("type", "reference")
+            references_list.extend(flatten_occurrences(reference_id, occurrences, ref_type))
+
         info = {}
         info["last_parse_date"] = self.data.get(COORD_DATA_LAST_PARSE)
         info["parse_duration"] = self.data.get(COORD_DATA_PARSE_DURATION)
@@ -576,6 +679,7 @@ class WatchmanCoordinator(DataUpdateCoordinator):
         info["processed_files_count"] = self.data.get(COORD_DATA_PROCESSED_FILES)
         info["missing_entities"] = entities_list
         info["missing_actions"] = actions_list
+        info["missing_references"] = references_list
         return info
 
     def request_parser_rescan(
@@ -839,6 +943,12 @@ class WatchmanCoordinator(DataUpdateCoordinator):
                     self._force_full_rescan = True
                     await self.async_request_refresh()
 
+        async def async_on_reference_registry_updated(_event: Event) -> None:
+            """Re-check device/area/floor/label references on registry changes."""
+            _LOGGER.debug("Registry change for a referenced object -> Force Full Rescan")
+            self._force_full_rescan = True
+            await self.async_request_refresh()
+
         # Config/Service/Reload events
         entry.async_on_unload(
             self.hass.bus.async_listen(EVENT_CALL_SERVICE, async_on_configuration_changed)
@@ -860,6 +970,19 @@ class WatchmanCoordinator(DataUpdateCoordinator):
         entry.async_on_unload(
             self.hass.bus.async_listen(EVENT_ENTITY_REGISTRY_UPDATED, async_on_registry_updated)
         )
+
+        # Device/Area/Floor/Label Registry Updates -> references changed
+        for event_type in (
+            EVENT_DEVICE_REGISTRY_UPDATED,
+            EVENT_AREA_REGISTRY_UPDATED,
+            EVENT_FLOOR_REGISTRY_UPDATED,
+            EVENT_LABEL_REGISTRY_UPDATED,
+        ):
+            entry.async_on_unload(
+                self.hass.bus.async_listen(
+                    event_type, async_on_reference_registry_updated
+                )
+            )
 
         # Initial subscription to existing automations
         self._update_automation_listener()
@@ -902,9 +1025,11 @@ class WatchmanCoordinator(DataUpdateCoordinator):
             all_items = await self.hub.async_get_all_items()
             parsed_service_list = all_items["services"]
             parsed_entity_list = all_items["entities"]
+            parsed_reference_list = all_items.get("references", {})
 
             self._parsed_entity_list_cache = parsed_entity_list
             self._parsed_service_list_cache = parsed_service_list
+            self._parsed_reference_list_cache = parsed_reference_list
 
             ctx = self._build_filter_context()
 
@@ -916,6 +1041,9 @@ class WatchmanCoordinator(DataUpdateCoordinator):
                 )
                 self._missing_actions_cache = renew_missing_items_list(
                     self.hass, parsed_service_list, ctx, item_type="action"
+                )
+                self._missing_references_cache = renew_missing_references_list(
+                    self.hass, parsed_reference_list, ctx
                 )
                 self._force_full_rescan = False
                 self._dirty_entities.clear()
@@ -941,6 +1069,7 @@ class WatchmanCoordinator(DataUpdateCoordinator):
             # Construct result from cache
             entities_missing = self._missing_entities_cache
             services_missing = self._missing_actions_cache
+            references_missing = self._missing_references_cache
 
             # build entity attributes map for missing_entities sensor
             entity_attrs = []
@@ -966,12 +1095,26 @@ class WatchmanCoordinator(DataUpdateCoordinator):
                 }
                 for service in services_missing
             ]
+
+            # build reference attributes map for missing references
+            reference_attrs = [
+                {
+                    "id": reference,
+                    "type": parsed_reference_list.get(reference, {}).get("type", ""),
+                    "occurrences": format_occurrences(
+                        parsed_reference_list[reference]["occurrences"], 0
+                    ),
+                }
+                for reference in references_missing
+            ]
             new_data = {
                 COORD_DATA_MISSING_ENTITIES: len(entities_missing),
                 COORD_DATA_MISSING_ACTIONS: len(services_missing),
+                COORD_DATA_MISSING_REFERENCES: len(references_missing),
                 COORD_DATA_LAST_UPDATE: dt_util.now(),
                 COORD_DATA_SERVICE_ATTRS: service_attrs,
                 COORD_DATA_ENTITY_ATTRS: entity_attrs,
+                COORD_DATA_REFERENCE_ATTRS: reference_attrs,
                 COORD_DATA_PARSE_DURATION: self.data.get(COORD_DATA_PARSE_DURATION, 0.0),
                 COORD_DATA_LAST_PARSE: self.data.get(COORD_DATA_LAST_PARSE),
                 COORD_DATA_PROCESSED_FILES: self.data.get(COORD_DATA_PROCESSED_FILES, 0),

@@ -19,7 +19,7 @@ CONFIG_ENTRY_MINOR_VERSION = 6
 DEFAULT_REPORT_FILENAME = f"{DOMAIN}_report.txt"
 DB_FILENAME = f"{DOMAIN}_v2.db"
 LEGACY_DB_FILENAME = f"{DOMAIN}.db"
-CURRENT_DB_SCHEMA_VERSION = 9
+CURRENT_DB_SCHEMA_VERSION = 10
 STORAGE_KEY = f"{DOMAIN}.stats"
 STORAGE_VERSION = 1
 LOCK_FILENAME = f"{DOMAIN}.lock"
@@ -51,9 +51,11 @@ HASS_DATA_CANCEL_HANDLERS = "cancel_handlers"
 
 COORD_DATA_MISSING_ENTITIES = "entities_missing"
 COORD_DATA_MISSING_ACTIONS = "services_missing"
+COORD_DATA_MISSING_REFERENCES = "references_missing"
 COORD_DATA_LAST_UPDATE = "last_update"
 COORD_DATA_SERVICE_ATTRS = "service_attrs"
 COORD_DATA_ENTITY_ATTRS = "entity_attrs"
+COORD_DATA_REFERENCE_ATTRS = "reference_attrs"
 COORD_DATA_PARSE_DURATION = "parse_duration"
 COORD_DATA_LAST_PARSE = "last_parse"
 COORD_DATA_PROCESSED_FILES = "processed_files"
@@ -61,6 +63,7 @@ COORD_DATA_IGNORED_FILES = "ignored_files"
 
 REPORT_ENTRY_TYPE_SERVICE = "service_list"
 REPORT_ENTRY_TYPE_ENTITY = "entity_list"
+REPORT_ENTRY_TYPE_REFERENCE = "reference_list"
 
 CONF_IGNORED_FILES = "ignored_files"
 CONF_HEADER = "report_header"
@@ -120,6 +123,7 @@ WATCHED_SERVICES = [
 SENSOR_LAST_UPDATE = "last_updated"
 SENSOR_MISSING_ENTITIES = "missing_entities"
 SENSOR_MISSING_ACTIONS = "missing_actions"
+SENSOR_MISSING_REFERENCES = "missing_references"
 SENSOR_STATUS = "status"
 SENSOR_PARSE_DURATION = "parse_duration"
 SENSOR_LAST_PARSE = "last_parse"
